@@ -3,14 +3,20 @@ set -euo pipefail
 
 : "${IMAGE:?IMAGE is required}"
 : "${INGRESS_HOST:?INGRESS_HOST is required}"
+: "${HARBOR_HOST:?HARBOR_HOST is required}"
+: "${HARBOR_IP:?HARBOR_IP is required}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-/tmp/next-kube-app-k8s}"
 
 mkdir -p "${OUT_DIR}"
 
-for manifest in namespace deployment service ingress; do
-  envsubst '${IMAGE} ${INGRESS_HOST}' < "${ROOT_DIR}/k8s/${manifest}.yaml" > "${OUT_DIR}/${manifest}.yaml"
+for manifest in namespace deployment service ingress rbac-cd-runner kaniko-build-job; do
+  if [[ "${manifest}" == "rbac-cd-runner" ]]; then
+    cp "${ROOT_DIR}/k8s/${manifest}.yaml" "${OUT_DIR}/${manifest}.yaml"
+  else
+    envsubst '${IMAGE} ${INGRESS_HOST} ${HARBOR_HOST} ${HARBOR_IP}' < "${ROOT_DIR}/k8s/${manifest}.yaml" > "${OUT_DIR}/${manifest}.yaml"
+  fi
 done
 
 if [[ -n "${DOCKER_CONFIG_JSON_B64:-}" ]]; then

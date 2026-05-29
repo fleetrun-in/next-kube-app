@@ -2,6 +2,8 @@
 
 Minimal Next.js application deployed to Kubernetes with Harbor and automated GitHub Actions delivery on merges to `main`.
 
+**Repository:** https://github.com/fleetrun-in/next-kube-app
+
 ## Local development
 
 ```bash
@@ -41,7 +43,32 @@ Configure these in the GitHub repo **Settings → Secrets and variables → Acti
 | `HARBOR_USERNAME` | Harbor robot or user account |
 | `HARBOR_PASSWORD` | Harbor password or robot token |
 | `KUBECONFIG_B64` | Base64-encoded kubeconfig with deploy permissions |
-| `INGRESS_HOST` | Public DNS name for the app (must resolve to ingress LB) |
+| `INGRESS_HOST` | Public DNS name for the app (e.g. `next-kube-app.example.com`) |
+| `HARBOR_IP` | Any node IP with ingress externalIPs (for Kaniko hostAliases) |
+
+## Cluster prerequisites (bare metal)
+
+Before the first deploy, on each node:
+
+1. Point `harbor.example.com` and your app host at a node IP (`/etc/hosts` or real DNS).
+2. Expose ingress on node IPs (`externalIPs` on `ingress-nginx-controller`).
+3. Allow Harbor pulls with a private/self-signed registry (see `scripts/configure-cluster-nodes.sh`).
+
+```bash
+# From the parent Kube repo .env
+source ../.env
+export KUBECONFIG=/path/to/kubeconfig
+./scripts/configure-cluster-nodes.sh
+```
+
+## Enable GitHub Actions workflow
+
+GitHub rejects workflow pushes unless your `gh` token has the `workflow` scope:
+
+```bash
+gh auth refresh -h github.com -s workflow
+git push origin main
+```
 
 ## CI/CD
 

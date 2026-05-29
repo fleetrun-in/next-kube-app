@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: next-kube-app-build
+  namespace: next-kube-app
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 1
+  template:
+    spec:
+      hostAliases:
+        - ip: "${HARBOR_IP}"
+          hostnames:
+            - "${HARBOR_HOST}"
+      restartPolicy: Never
+      initContainers:
+        - name: clone
+          image: alpine/git:2.47.2
+          command:
+            - sh
+            - -c
+            - |
+              git clone --depth 1 https://github.com/fleetrun-in/next-kube-app.git /workspace
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:v1.23.2
+          args:
+            - --context=dir:///workspace
+            - --dockerfile=Dockerfile
+            - --destination=${IMAGE}
+            - --skip-tls-verify-registry=${HARBOR_HOST}
+          env:
+            - name: DOCKER_CONFIG
+              value: /kaniko/.docker
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: docker-config
+              mountPath: /kaniko/.docker
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: docker-config
+          secret:
+            secretName: harbor-registry
+            items:
+              - key: .dockerconfigjson
+                path: config.json
