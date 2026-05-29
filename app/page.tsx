@@ -8,7 +8,7 @@ export default function Home() {
         Hello from Fleetrun
       </h1>
       <p className="max-w-md text-lg text-zinc-600 dark:text-zinc-400">
-        This Next.js app is deployed on your cluster and updated automatically
+        This Next-Kube app is deployed on your cluster and updated automatically
         when changes merge to <code className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-800">main</code>.
       </p>
     </main>
