@@ -1,0 +1,163 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  APP_NAME: next-kube-app
+  K8S_NAMESPACE: next-kube-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        run: |
+          trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+          HARBOR_REGISTRY="$(trim "${HARBOR_REGISTRY}")"
+          HARBOR_PROJECT="$(trim "${HARBOR_PROJECT}")"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY#https://}"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY#http://}"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY%/}"
+
+          if [[ -z "${HARBOR_REGISTRY}" || -z "${HARBOR_PROJECT}" ]]; then
+            echo "HARBOR_REGISTRY and HARBOR_PROJECT must be non-empty (hostname only, no scheme)." >&2
+            exit 1
+          fi
+          if [[ "${HARBOR_REGISTRY}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "HARBOR_REGISTRY must be the TLS certificate hostname (e.g. harbor.example.com), not an IP address." >&2
+            echo "Put the node IP in the HARBOR_IP secret; the workflow maps it in /etc/hosts." >&2
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${SHORT_SHA}"
+          IMAGE_LATEST="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:latest"
+          {
+            echo "IMAGE=${IMAGE}"
+            echo "IMAGE_LATEST=${IMAGE_LATEST}"
+            echo "IMAGE_TAG=${SHORT_SHA}"
+            echo "HARBOR_HOST=${HARBOR_REGISTRY}"
+          } >> "${GITHUB_ENV}"
+          echo "image=${IMAGE}"
+        env:
+          HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
+          HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
+
+      - name: Configure Harbor registry access
+        run: |
+          if [[ -z "${HARBOR_IP:-}" ]]; then
+            echo "HARBOR_IP secret is required so the runner can resolve ${HARBOR_HOST} to your cluster." >&2
+            exit 1
+          fi
+          if ! grep -qE "[[:space:]]${HARBOR_HOST}([[:space:]]|$)" /etc/hosts; then
+            echo "${HARBOR_IP} ${HARBOR_HOST}" | sudo tee -a /etc/hosts
+          fi
+          if [[ -n "${HARBOR_CA_CERT_B64:-}" ]]; then
+            sudo mkdir -p "/etc/docker/certs.d/${HARBOR_HOST}"
+            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee "/etc/docker/certs.d/${HARBOR_HOST}/ca.crt" >/dev/null
+            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee /usr/local/share/ca-certificates/harbor-ca.crt >/dev/null
+            sudo update-ca-certificates
+            echo "HARBOR_CA_INSTALLED=true" >> "${GITHUB_ENV}"
+          fi
+        env:
+          HARBOR_HOST: ${{ env.HARBOR_HOST }}
+          HARBOR_IP: ${{ secrets.HARBOR_IP }}
+          HARBOR_CA_CERT_B64: ${{ secrets.HARBOR_CA_CERT_B64 }}
+
+      - name: Set up Docker Buildx
+        if: env.HARBOR_CA_INSTALLED == 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [registry."${{ env.HARBOR_HOST }}"]
+              ca=["/etc/docker/certs.d/${{ env.HARBOR_HOST }}/ca.crt"]
+
+      - name: Set up Docker Buildx
+        if: env.HARBOR_CA_INSTALLED != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_HOST }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}
+            ${{ env.IMAGE_LATEST }}
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "${HOME}/.kube"
+          if [[ -n "${KUBECONFIG_B64:-}" ]]; then
+            echo "${KUBECONFIG_B64}" | base64 -d > "${HOME}/.kube/config"
+            chmod 600 "${HOME}/.kube/config"
+          elif [[ -f /etc/kubernetes/admin.conf ]]; then
+            cp /etc/kubernetes/admin.conf "${HOME}/.kube/config"
+            chmod 600 "${HOME}/.kube/config"
+          else
+            echo "No kubeconfig available (set KUBECONFIG_B64 secret or run on cluster runner)" >&2
+            exit 1
+          fi
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+
+      - name: Create Harbor pull secret payload
+        run: |
+          trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+          HARBOR_REGISTRY="$(trim "${HARBOR_REGISTRY}")"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY#https://}"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY#http://}"
+          HARBOR_REGISTRY="${HARBOR_REGISTRY%/}"
+          AUTH="$(printf '%s:%s' "${HARBOR_USERNAME}" "${HARBOR_PASSWORD}" | base64 -w0)"
+          DOCKER_CONFIG_JSON="$(printf '{"auths":{"%s":{"auth":"%s"}}}' "${HARBOR_REGISTRY}" "${AUTH}")"
+          printf '%s' "${DOCKER_CONFIG_JSON}" | base64 -w0 > /tmp/docker_config_json.b64
+        env:
+          HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Render manifests
+        run: |
+          chmod +x scripts/render-manifests.sh
+          export IMAGE="${{ env.IMAGE }}"
+          export INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          export HARBOR_HOST="${{ env.HARBOR_HOST }}"
+          export HARBOR_IP="${{ secrets.HARBOR_IP }}"
+          export DOCKER_CONFIG_JSON_B64="$(cat /tmp/docker_config_json.b64)"
+          ./scripts/render-manifests.sh
+        env:
+          OUT_DIR: /tmp/next-kube-app-k8s
+
+      - name: Deploy to cluster
+        env:
+          APP_NAME: ${{ env.APP_NAME }}
+          K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
+        run: |
+          kubectl apply -f /tmp/next-kube-app-k8s/namespace.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/rbac-cd-runner.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/imagepullsecret.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/deployment.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/service.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/ingress.yaml
+          kubectl rollout status "deployment/${APP_NAME}" -n "${K8S_NAMESPACE}" --timeout=300s
+
+      - name: Deployment summary
+        run: |
+          echo "Image: ${{ env.IMAGE }}"
+          echo "Ingress host: ${{ secrets.INGRESS_HOST }}"
+          kubectl get ingress,svc,pods -n "${K8S_NAMESPACE}"
