@@ -87,7 +87,7 @@ Point DNS for `INGRESS_HOST` at your ingress-nginx external endpoint. cert-manag
 
 Harbor on bare metal usually uses a cert for a **hostname** (e.g. `harbor.example.com`), not for a raw IP. If `HARBOR_REGISTRY` is an IP, Docker fails with `doesn't contain any IP SANs`.
 
-1. Set `HARBOR_REGISTRY` to the hostname on the certificate (same name you use in cluster `/etc/hosts`), **or** keep your IP in `HARBOR_REGISTRY` and add `HARBOR_HOSTNAME` with the cert name.
+1. Set `HARBOR_REGISTRY` to the hostname on the certificate (same name you use in cluster `/etc/hosts`), **or** keep your IP in `HARBOR_REGISTRY` and the workflow will derive `harbor.<domain>` from `INGRESS_HOST` (or set `HARBOR_HOSTNAME` explicitly).
 2. Set `HARBOR_IP` to a node IP that reaches Harbor ingress (the workflow adds a hosts entry on the runner).
 3. If the registry uses a private CA or self-signed cert, add `HARBOR_CA_CERT_B64` (base64-encoded CA `.crt` file).
 
