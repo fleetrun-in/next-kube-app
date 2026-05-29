@@ -1,5 +1,3 @@
-# Canonical copy: .github/workflows/deploy.yaml
-# This file is kept for reference; GitHub Actions only runs workflows under .github/workflows/.
 name: Build and Deploy
 
 on:
