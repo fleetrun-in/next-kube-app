@@ -2,6 +2,8 @@
 set -euo pipefail
 
 : "${IMAGE:?IMAGE is required}"
+: "${IMAGE_LATEST:?IMAGE_LATEST is required}"
+: "${GIT_SHA:?GIT_SHA is required}"
 : "${INGRESS_HOST:?INGRESS_HOST is required}"
 : "${HARBOR_HOST:?HARBOR_HOST is required}"
 : "${HARBOR_IP:?HARBOR_IP is required}"
@@ -15,7 +17,7 @@ for manifest in namespace deployment service ingress rbac-cd-runner kaniko-build
   if [[ "${manifest}" == "rbac-cd-runner" ]]; then
     cp "${ROOT_DIR}/k8s/${manifest}.yaml" "${OUT_DIR}/${manifest}.yaml"
   else
-    envsubst '${IMAGE} ${INGRESS_HOST} ${HARBOR_HOST} ${HARBOR_IP}' < "${ROOT_DIR}/k8s/${manifest}.yaml" > "${OUT_DIR}/${manifest}.yaml"
+    envsubst '${IMAGE} ${IMAGE_LATEST} ${GIT_SHA} ${INGRESS_HOST} ${HARBOR_HOST} ${HARBOR_IP} ${APP_NAME}' < "${ROOT_DIR}/k8s/${manifest}.yaml" > "${OUT_DIR}/${manifest}.yaml"
   fi
 done
 

@@ -39,7 +39,7 @@ Configure these in the GitHub repo **Settings → Secrets and variables → Acti
 | Secret | Description |
 |--------|-------------|
 | `HARBOR_REGISTRY` | Harbor hostname for image paths (e.g. `harbor.example.com`) — or an IP if you also set `HARBOR_HOSTNAME` |
-| `HARBOR_HOSTNAME` | Required when `HARBOR_REGISTRY` is an IP: TLS cert hostname (e.g. `harbor.example.com`) |
+| `HARBOR_HOSTNAME` | **Required** for private Harbor: TLS cert hostname (e.g. `harbor.example.com`) — same as cluster `/etc/hosts` |
 | `HARBOR_PROJECT` | Harbor project name (e.g. `apps`) — no leading/trailing slashes |
 | `HARBOR_CA_CERT_B64` | Optional: base64 of Harbor CA/root `.crt` if the registry uses a private or self-signed certificate |
 | `HARBOR_USERNAME` | Harbor robot or user account |
@@ -74,22 +74,29 @@ git push origin main
 
 ## CI/CD
 
-On every push to `main`, GitHub Actions:
+On every push to `main`, GitHub Actions connects to your cluster via `KUBECONFIG_B64`, builds the image **inside the cluster** with Kaniko (GitHub-hosted runners cannot reach a private Harbor IP), pushes to Harbor, applies manifests, and waits for rollout.
 
-1. Builds the Docker image
-2. Pushes to Harbor (`<registry>/<project>/next-kube-app:<sha>` and `:latest`)
-3. Applies Kubernetes manifests
-4. Waits for rollout completion
+1. Renders Kubernetes manifests
+2. Runs a Kaniko build Job in the cluster (clones this repo at the commit SHA)
+3. Pushes to Harbor (`<hostname>/<project>/next-kube-app:<sha>` and `:latest`)
+4. Applies Deployment, Service, and Ingress
+5. Waits for rollout completion
 
 Point DNS for `INGRESS_HOST` at your ingress-nginx external endpoint. cert-manager issues TLS via the `letsencrypt-prod` ClusterIssuer.
 
 ## Harbor TLS in GitHub Actions
 
-Harbor on bare metal usually uses a cert for a **hostname** (e.g. `harbor.example.com`), not for a raw IP. If `HARBOR_REGISTRY` is an IP, Docker fails with `doesn't contain any IP SANs`.
+Harbor on bare metal is private — the workflow does **not** build on the GitHub runner. Kaniko runs on-cluster with `hostAliases` and TLS skip (same as `scripts/configure-cluster-nodes.sh`).
 
-1. Set `HARBOR_REGISTRY` to the hostname on the certificate (same name you use in cluster `/etc/hosts`), **or** keep your IP in `HARBOR_REGISTRY` and the workflow will derive `harbor.<domain>` from `INGRESS_HOST` (or set `HARBOR_HOSTNAME` explicitly).
-2. Set `HARBOR_IP` to a node IP that reaches Harbor ingress (the workflow adds a hosts entry on the runner).
-3. If the registry uses a private CA or self-signed cert, add `HARBOR_CA_CERT_B64` (base64-encoded CA `.crt` file).
+Set **`HARBOR_HOSTNAME`** to the Harbor TLS hostname (same as cluster `/etc/hosts`, e.g. `harbor.example.com`). This is required when `HARBOR_REGISTRY` is an IP or when `INGRESS_HOST` uses an IP-based name (e.g. `app.178.38.188.254`).
+
+| Secret | Example |
+|--------|---------|
+| `HARBOR_HOSTNAME` | `harbor.example.com` |
+| `HARBOR_IP` | `178.38.188.254` |
+| `HARBOR_REGISTRY` | `178.38.188.254` or `harbor.example.com` |
+
+If the registry uses a private CA, add `HARBOR_CA_CERT_B64` (optional; Kaniko uses `--skip-tls-verify-registry`).
 
 ```bash
 base64 -w0 harbor-ca.crt   # paste into GitHub secret HARBOR_CA_CERT_B64

@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: next-kube-app-build
+  name: ${APP_NAME}-build
   namespace: next-kube-app
 spec:
   ttlSecondsAfterFinished: 300
@@ -20,7 +20,12 @@ spec:
             - sh
             - -c
             - |
-              git clone --depth 1 https://github.com/fleetrun-in/next-kube-app.git /workspace
+              git clone https://github.com/fleetrun-in/next-kube-app.git /workspace
+              cd /workspace
+              git checkout "${GIT_SHA}"
+          env:
+            - name: GIT_SHA
+              value: "${GIT_SHA}"
           volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -31,6 +36,7 @@ spec:
             - --context=dir:///workspace
             - --dockerfile=Dockerfile
             - --destination=${IMAGE}
+            - --destination=${IMAGE_LATEST}
             - --skip-tls-verify-registry=${HARBOR_HOST}
           env:
             - name: DOCKER_CONFIG

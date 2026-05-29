@@ -17,9 +17,6 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set image tag
         run: |
           trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
@@ -47,18 +44,17 @@ jobs:
           elif ! is_ip "${HARBOR_REGISTRY}"; then
             HARBOR_HOST="${HARBOR_REGISTRY}"
           elif [[ -n "${INGRESS_HOST}" && "${INGRESS_HOST}" == *.* ]]; then
-            HARBOR_HOST="harbor.${INGRESS_HOST#*.}"
-            echo "HARBOR_REGISTRY is an IP; derived HARBOR_HOST=${HARBOR_HOST} from INGRESS_HOST=${INGRESS_HOST}." >&2
-          else
-            echo "HARBOR_REGISTRY is an IP address. Set one of:" >&2
-            echo "  - HARBOR_REGISTRY to your Harbor hostname (e.g. harbor.example.com), with the IP in HARBOR_IP" >&2
-            echo "  - HARBOR_HOSTNAME to the TLS cert hostname" >&2
-            echo "  - INGRESS_HOST so the workflow can derive harbor.<domain>" >&2
-            exit 1
+            INGRESS_DOMAIN="${INGRESS_HOST#*.}"
+            if [[ "${INGRESS_DOMAIN}" =~ [a-zA-Z] && ! "${INGRESS_DOMAIN}" =~ ^[0-9.]+$ ]]; then
+              HARBOR_HOST="harbor.${INGRESS_DOMAIN}"
+              echo "Derived HARBOR_HOST=${HARBOR_HOST} from INGRESS_HOST=${INGRESS_HOST}." >&2
+            fi
           fi
 
-          if is_ip "${HARBOR_REGISTRY}"; then
-            echo "Using ${HARBOR_HOST} for TLS/image tags; HARBOR_IP maps it in /etc/hosts." >&2
+          if [[ -z "${HARBOR_HOST:-}" ]]; then
+            echo "Could not determine Harbor hostname. Set HARBOR_HOSTNAME to the TLS cert name" >&2
+            echo "(same hostname as cluster /etc/hosts, e.g. harbor.example.com)." >&2
+            exit 1
           fi
 
           SHORT_SHA="${GITHUB_SHA::7}"
@@ -76,73 +72,6 @@ jobs:
           HARBOR_HOSTNAME: ${{ secrets.HARBOR_HOSTNAME }}
           HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
           INGRESS_HOST: ${{ secrets.INGRESS_HOST }}
-
-      - name: Configure Harbor registry access
-        run: |
-          if [[ -z "${HARBOR_IP:-}" ]]; then
-            echo "HARBOR_IP secret is required so the runner can resolve ${HARBOR_HOST} to your cluster." >&2
-            exit 1
-          fi
-          if ! grep -qE "[[:space:]]${HARBOR_HOST}([[:space:]]|$)" /etc/hosts; then
-            echo "${HARBOR_IP} ${HARBOR_HOST}" | sudo tee -a /etc/hosts
-          fi
-          if [[ -n "${HARBOR_CA_CERT_B64:-}" ]]; then
-            sudo mkdir -p "/etc/docker/certs.d/${HARBOR_HOST}"
-            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee "/etc/docker/certs.d/${HARBOR_HOST}/ca.crt" >/dev/null
-            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee /usr/local/share/ca-certificates/harbor-ca.crt >/dev/null
-            sudo update-ca-certificates
-            echo "HARBOR_CA_INSTALLED=true" >> "${GITHUB_ENV}"
-          fi
-        env:
-          HARBOR_HOST: ${{ env.HARBOR_HOST }}
-          HARBOR_IP: ${{ secrets.HARBOR_IP }}
-          HARBOR_CA_CERT_B64: ${{ secrets.HARBOR_CA_CERT_B64 }}
-
-      - name: Set up Docker Buildx
-        if: env.HARBOR_CA_INSTALLED == 'true'
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config-inline: |
-            [registry."${{ env.HARBOR_HOST }}"]
-              ca=["/etc/docker/certs.d/${{ env.HARBOR_HOST }}/ca.crt"]
-
-      - name: Set up Docker Buildx
-        if: env.HARBOR_CA_INSTALLED != 'true'
-        uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config-inline: |
-            [registry."${{ env.HARBOR_HOST }}"]
-              insecure = true
-
-      - name: Configure Docker registry TLS
-        if: env.HARBOR_CA_INSTALLED != 'true'
-        run: |
-          sudo mkdir -p "/etc/docker/certs.d/${HARBOR_HOST}"
-          printf '%s\n' \
-            "server = \"https://${HARBOR_HOST}\"" \
-            "" \
-            "[host.\"https://${HARBOR_HOST}\"]" \
-            '  capabilities = ["pull", "resolve", "push"]' \
-            '  skip_verify = true' \
-            | sudo tee "/etc/docker/certs.d/${HARBOR_HOST}/hosts.toml" >/dev/null
-        env:
-          HARBOR_HOST: ${{ env.HARBOR_HOST }}
-
-      - name: Log in to Harbor
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.HARBOR_HOST }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}
-            ${{ env.IMAGE_LATEST }}
 
       - name: Configure kubeconfig
         run: |
@@ -174,6 +103,9 @@ jobs:
         run: |
           chmod +x scripts/render-manifests.sh
           export IMAGE="${{ env.IMAGE }}"
+          export IMAGE_LATEST="${{ env.IMAGE_LATEST }}"
+          export GIT_SHA="${{ github.sha }}"
+          export APP_NAME="${{ env.APP_NAME }}"
           export INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
           export HARBOR_HOST="${{ env.HARBOR_HOST }}"
           export HARBOR_IP="${{ secrets.HARBOR_IP }}"
@@ -181,6 +113,19 @@ jobs:
           ./scripts/render-manifests.sh
         env:
           OUT_DIR: /tmp/next-kube-app-k8s
+
+      - name: Build and push image in cluster
+        env:
+          APP_NAME: ${{ env.APP_NAME }}
+          K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
+        run: |
+          kubectl apply -f /tmp/next-kube-app-k8s/namespace.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/rbac-cd-runner.yaml
+          kubectl apply -f /tmp/next-kube-app-k8s/imagepullsecret.yaml
+          kubectl delete job "${APP_NAME}-build" -n "${K8S_NAMESPACE}" --ignore-not-found
+          kubectl apply -f /tmp/next-kube-app-k8s/kaniko-build-job.yaml
+          kubectl wait --for=condition=complete "job/${APP_NAME}-build" -n "${K8S_NAMESPACE}" --timeout=900s
+          kubectl logs "job/${APP_NAME}-build" -n "${K8S_NAMESPACE}" --all-containers=true
 
       - name: Deploy to cluster
         env:
