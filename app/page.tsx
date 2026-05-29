@@ -5,7 +5,7 @@ export default function Home() {
         next-kube-app
       </p>
       <h1 className="text-4xl font-semibold text-zinc-900 dark:text-zinc-50">
-        Hello from Kubernetes
+        Hello from Fleetrun
       </h1>
       <p className="max-w-md text-lg text-zinc-600 dark:text-zinc-400">
         This Next.js app is deployed on your cluster and updated automatically
