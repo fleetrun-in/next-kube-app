@@ -23,35 +23,59 @@ jobs:
       - name: Set image tag
         run: |
           trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+          is_ip() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
           HARBOR_REGISTRY="$(trim "${HARBOR_REGISTRY}")"
           HARBOR_PROJECT="$(trim "${HARBOR_PROJECT}")"
           HARBOR_REGISTRY="${HARBOR_REGISTRY#https://}"
           HARBOR_REGISTRY="${HARBOR_REGISTRY#http://}"
           HARBOR_REGISTRY="${HARBOR_REGISTRY%/}"
 
+          HARBOR_HOSTNAME="$(trim "${HARBOR_HOSTNAME:-}")"
+          HARBOR_HOSTNAME="${HARBOR_HOSTNAME#https://}"
+          HARBOR_HOSTNAME="${HARBOR_HOSTNAME#http://}"
+          HARBOR_HOSTNAME="${HARBOR_HOSTNAME%/}"
+          INGRESS_HOST="$(trim "${INGRESS_HOST:-}")"
+
           if [[ -z "${HARBOR_REGISTRY}" || -z "${HARBOR_PROJECT}" ]]; then
-            echo "HARBOR_REGISTRY and HARBOR_PROJECT must be non-empty (hostname only, no scheme)." >&2
-            exit 1
-          fi
-          if [[ "${HARBOR_REGISTRY}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "HARBOR_REGISTRY must be the TLS certificate hostname (e.g. harbor.example.com), not an IP address." >&2
-            echo "Put the node IP in the HARBOR_IP secret; the workflow maps it in /etc/hosts." >&2
+            echo "HARBOR_REGISTRY and HARBOR_PROJECT must be non-empty." >&2
             exit 1
           fi
 
+          if [[ -n "${HARBOR_HOSTNAME}" ]]; then
+            HARBOR_HOST="${HARBOR_HOSTNAME}"
+          elif ! is_ip "${HARBOR_REGISTRY}"; then
+            HARBOR_HOST="${HARBOR_REGISTRY}"
+          elif [[ -n "${INGRESS_HOST}" && "${INGRESS_HOST}" == *.* ]]; then
+            HARBOR_HOST="harbor.${INGRESS_HOST#*.}"
+            echo "HARBOR_REGISTRY is an IP; derived HARBOR_HOST=${HARBOR_HOST} from INGRESS_HOST=${INGRESS_HOST}." >&2
+          else
+            echo "HARBOR_REGISTRY is an IP address. Set one of:" >&2
+            echo "  - HARBOR_REGISTRY to your Harbor hostname (e.g. harbor.example.com), with the IP in HARBOR_IP" >&2
+            echo "  - HARBOR_HOSTNAME to the TLS cert hostname" >&2
+            echo "  - INGRESS_HOST so the workflow can derive harbor.<domain>" >&2
+            exit 1
+          fi
+
+          if is_ip "${HARBOR_REGISTRY}"; then
+            echo "Using ${HARBOR_HOST} for TLS/image tags; HARBOR_IP maps it in /etc/hosts." >&2
+          fi
+
           SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${SHORT_SHA}"
-          IMAGE_LATEST="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:latest"
+          IMAGE="${HARBOR_HOST}/${HARBOR_PROJECT}/${APP_NAME}:${SHORT_SHA}"
+          IMAGE_LATEST="${HARBOR_HOST}/${HARBOR_PROJECT}/${APP_NAME}:latest"
           {
             echo "IMAGE=${IMAGE}"
             echo "IMAGE_LATEST=${IMAGE_LATEST}"
             echo "IMAGE_TAG=${SHORT_SHA}"
-            echo "HARBOR_HOST=${HARBOR_REGISTRY}"
+            echo "HARBOR_HOST=${HARBOR_HOST}"
           } >> "${GITHUB_ENV}"
           echo "image=${IMAGE}"
         env:
           HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
+          HARBOR_HOSTNAME: ${{ secrets.HARBOR_HOSTNAME }}
           HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
+          INGRESS_HOST: ${{ secrets.INGRESS_HOST }}
 
       - name: Configure Harbor registry access
         run: |
@@ -85,6 +109,24 @@ jobs:
       - name: Set up Docker Buildx
         if: env.HARBOR_CA_INSTALLED != 'true'
         uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [registry."${{ env.HARBOR_HOST }}"]
+              insecure = true
+
+      - name: Configure Docker registry TLS
+        if: env.HARBOR_CA_INSTALLED != 'true'
+        run: |
+          sudo mkdir -p "/etc/docker/certs.d/${HARBOR_HOST}"
+          printf '%s\n' \
+            "server = \"https://${HARBOR_HOST}\"" \
+            "" \
+            "[host.\"https://${HARBOR_HOST}\"]" \
+            '  capabilities = ["pull", "resolve", "push"]' \
+            '  skip_verify = true' \
+            | sudo tee "/etc/docker/certs.d/${HARBOR_HOST}/hosts.toml" >/dev/null
+        env:
+          HARBOR_HOST: ${{ env.HARBOR_HOST }}
 
       - name: Log in to Harbor
         uses: docker/login-action@v3
@@ -120,16 +162,11 @@ jobs:
 
       - name: Create Harbor pull secret payload
         run: |
-          trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
-          HARBOR_REGISTRY="$(trim "${HARBOR_REGISTRY}")"
-          HARBOR_REGISTRY="${HARBOR_REGISTRY#https://}"
-          HARBOR_REGISTRY="${HARBOR_REGISTRY#http://}"
-          HARBOR_REGISTRY="${HARBOR_REGISTRY%/}"
           AUTH="$(printf '%s:%s' "${HARBOR_USERNAME}" "${HARBOR_PASSWORD}" | base64 -w0)"
-          DOCKER_CONFIG_JSON="$(printf '{"auths":{"%s":{"auth":"%s"}}}' "${HARBOR_REGISTRY}" "${AUTH}")"
+          DOCKER_CONFIG_JSON="$(printf '{"auths":{"%s":{"auth":"%s"}}}' "${HARBOR_HOST}" "${AUTH}")"
           printf '%s' "${DOCKER_CONFIG_JSON}" | base64 -w0 > /tmp/docker_config_json.b64
         env:
-          HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
+          HARBOR_HOST: ${{ env.HARBOR_HOST }}
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
 
