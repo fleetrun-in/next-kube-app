@@ -33,6 +33,11 @@ jobs:
             echo "HARBOR_REGISTRY and HARBOR_PROJECT must be non-empty (hostname only, no scheme)." >&2
             exit 1
           fi
+          if [[ "${HARBOR_REGISTRY}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "HARBOR_REGISTRY must be the TLS certificate hostname (e.g. harbor.example.com), not an IP address." >&2
+            echo "Put the node IP in the HARBOR_IP secret; the workflow maps it in /etc/hosts." >&2
+            exit 1
+          fi
 
           SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${SHORT_SHA}"
@@ -47,6 +52,39 @@ jobs:
         env:
           HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
           HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
+
+      - name: Configure Harbor registry access
+        run: |
+          if [[ -z "${HARBOR_IP:-}" ]]; then
+            echo "HARBOR_IP secret is required so the runner can resolve ${HARBOR_HOST} to your cluster." >&2
+            exit 1
+          fi
+          if ! grep -qE "[[:space:]]${HARBOR_HOST}([[:space:]]|$)" /etc/hosts; then
+            echo "${HARBOR_IP} ${HARBOR_HOST}" | sudo tee -a /etc/hosts
+          fi
+          if [[ -n "${HARBOR_CA_CERT_B64:-}" ]]; then
+            sudo mkdir -p "/etc/docker/certs.d/${HARBOR_HOST}"
+            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee "/etc/docker/certs.d/${HARBOR_HOST}/ca.crt" >/dev/null
+            echo "${HARBOR_CA_CERT_B64}" | base64 -d | sudo tee /usr/local/share/ca-certificates/harbor-ca.crt >/dev/null
+            sudo update-ca-certificates
+            echo "HARBOR_CA_INSTALLED=true" >> "${GITHUB_ENV}"
+          fi
+        env:
+          HARBOR_HOST: ${{ env.HARBOR_HOST }}
+          HARBOR_IP: ${{ secrets.HARBOR_IP }}
+          HARBOR_CA_CERT_B64: ${{ secrets.HARBOR_CA_CERT_B64 }}
+
+      - name: Set up Docker Buildx
+        if: env.HARBOR_CA_INSTALLED == 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [registry."${{ env.HARBOR_HOST }}"]
+              ca=["/etc/docker/certs.d/${{ env.HARBOR_HOST }}/ca.crt"]
+
+      - name: Set up Docker Buildx
+        if: env.HARBOR_CA_INSTALLED != 'true'
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Harbor
         uses: docker/login-action@v3
