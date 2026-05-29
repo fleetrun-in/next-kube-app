@@ -38,7 +38,8 @@ Configure these in the GitHub repo **Settings → Secrets and variables → Acti
 
 | Secret | Description |
 |--------|-------------|
-| `HARBOR_REGISTRY` | Harbor **hostname** on the TLS cert (e.g. `harbor.example.com`) — not an IP, no `https://`, no trailing slash |
+| `HARBOR_REGISTRY` | Harbor hostname for image paths (e.g. `harbor.example.com`) — or an IP if you also set `HARBOR_HOSTNAME` |
+| `HARBOR_HOSTNAME` | Required when `HARBOR_REGISTRY` is an IP: TLS cert hostname (e.g. `harbor.example.com`) |
 | `HARBOR_PROJECT` | Harbor project name (e.g. `apps`) — no leading/trailing slashes |
 | `HARBOR_CA_CERT_B64` | Optional: base64 of Harbor CA/root `.crt` if the registry uses a private or self-signed certificate |
 | `HARBOR_USERNAME` | Harbor robot or user account |
@@ -86,7 +87,7 @@ Point DNS for `INGRESS_HOST` at your ingress-nginx external endpoint. cert-manag
 
 Harbor on bare metal usually uses a cert for a **hostname** (e.g. `harbor.example.com`), not for a raw IP. If `HARBOR_REGISTRY` is an IP, Docker fails with `doesn't contain any IP SANs`.
 
-1. Set `HARBOR_REGISTRY` to the hostname on the certificate (same name you use in cluster `/etc/hosts`).
+1. Set `HARBOR_REGISTRY` to the hostname on the certificate (same name you use in cluster `/etc/hosts`), **or** keep your IP in `HARBOR_REGISTRY` and add `HARBOR_HOSTNAME` with the cert name.
 2. Set `HARBOR_IP` to a node IP that reaches Harbor ingress (the workflow adds a hosts entry on the runner).
 3. If the registry uses a private CA or self-signed cert, add `HARBOR_CA_CERT_B64` (base64-encoded CA `.crt` file).
 
