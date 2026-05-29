@@ -38,8 +38,8 @@ Configure these in the GitHub repo **Settings → Secrets and variables → Acti
 
 | Secret | Description |
 |--------|-------------|
-| `HARBOR_REGISTRY` | Harbor hostname (e.g. `harbor.example.com`) |
-| `HARBOR_PROJECT` | Harbor project name (create `apps` or your project) |
+| `HARBOR_REGISTRY` | Harbor hostname only (e.g. `harbor.example.com`) — no `https://`, no trailing slash or newline |
+| `HARBOR_PROJECT` | Harbor project name (e.g. `apps`) — no leading/trailing slashes |
 | `HARBOR_USERNAME` | Harbor robot or user account |
 | `HARBOR_PASSWORD` | Harbor password or robot token |
 | `KUBECONFIG_B64` | Base64-encoded kubeconfig with deploy permissions |
